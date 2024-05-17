@@ -8,6 +8,9 @@ use std::sync::{Arc, Mutex};
 use serde::{Serialize, Deserialize};
 use clap::{App, Arg, SubCommand};
 use reqwest::Client;
+use std::time::{Instant, Duration};
+use tokio::time::{interval, sleep_until};
+use std::thread::sleep;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct CreateAccountPayload {
@@ -85,10 +88,27 @@ async fn start_node() {
     // Clone the accounts map for the warp filter
     let accounts_filter = warp::any().map(move || Arc::clone(&accounts));
 
+    let genesis_time = Instant::now();
+    let genesis_time_filter = warp::any().map(move || genesis_time);
+
+    // Create a new interval that ticks every 10 seconds
+    let mut interval = interval(Duration::from_secs(10));
+
+    // Spawn a new task that prints a message every 10 seconds
+    tokio::spawn(async move {
+        let mut block_count = 0;
+        loop {
+            interval.tick().await;
+            block_count += 1;
+            println!("Block {} mined", block_count);
+        }
+    });
+
     let rpc = warp::path::end()
         .and(warp::post())
         .and(warp::body::json())
         .and(accounts_filter)
+        .and(genesis_time_filter)
         .map(handle_rpc);
 
     println!("Node running on http://127.0.0.1:3030");
@@ -96,7 +116,11 @@ async fn start_node() {
     warp::serve(rpc).run(([127, 0, 0, 1], 3030)).await;
 }
 
-fn handle_rpc(req: RpcRequest, accounts: Arc<Mutex<HashMap<String, String>>>) -> warp::reply::Json {
+fn handle_rpc(
+    req: RpcRequest, 
+    accounts: Arc<Mutex<HashMap<String, String>>>, 
+    genesis_time: Instant
+) -> warp::reply::Json {
     let response = match req.method.as_str() {
         "create_account" => {
             let params = req.params.clone();
@@ -106,6 +130,15 @@ fn handle_rpc(req: RpcRequest, accounts: Arc<Mutex<HashMap<String, String>>>) ->
                 if let (Some(id), Some(balance)) = (params.get("id").and_then(|v| v.as_str()), params.get("balance").and_then(|v| v.as_str())) {
                     let mut accounts = accounts.lock().unwrap();
                     accounts.insert(id.to_string(), balance.to_string());
+
+                    let now = Instant::now();
+                    let elapsed = now.duration_since(genesis_time);
+                    let next = ((elapsed.as_secs() / 10) + 1) * 10;
+                    let sleep_time = next - elapsed.as_secs();
+                    
+                    println!("T={}. Waiting to be confirmed...", elapsed.as_secs());
+                    sleep(Duration::from_secs(sleep_time));
+
                     warp::reply::json(&RpcResponse {
                         jsonrpc: "2.0".into(),
                         result: json!(format!("Account created: id={}, balance={}", id, balance)),
@@ -197,6 +230,14 @@ fn handle_rpc(req: RpcRequest, accounts: Arc<Mutex<HashMap<String, String>>>) ->
                         let new_balance_to = balance_to + amount_u64;
                         *balance_to_str = new_balance_to.to_string();
                     }
+
+                    let now = Instant::now();
+                    let elapsed = now.duration_since(genesis_time);
+                    let next = ((elapsed.as_secs() / 10) + 1) * 10;
+                    let sleep_time = next - elapsed.as_secs();
+                    
+                    println!("T={}. Waiting to be confirmed...", elapsed.as_secs());
+                    sleep(Duration::from_secs(sleep_time));
                 
                     warp::reply::json(&RpcResponse {
                         jsonrpc: "2.0".into(),
